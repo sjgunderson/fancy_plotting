@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fancy_plotting"
+version = "0.1.0"
+description = "Grid matching, combined fitting, and advanced plotting for Sherpa spectra"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = ["numpy>=1.23", "scipy>=1.9"]
+
+[project.optional-dependencies]
+plotting = ["matplotlib>=3.6"]
+test = ["matplotlib>=3.6", "pytest>=7"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fancy_plotting*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

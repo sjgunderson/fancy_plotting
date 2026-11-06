@@ -1,22 +1,17 @@
-name: Sync Docs to Wiki
+name: Documentation
 
-on:
-  push:
-    branches:
-      - main     # Triggers when you push to your main branch
-    paths:
-      - 'docs/**' # Only runs if files inside the docs folder change
+on: [push]
 
 jobs:
-  sync-wiki:
+  build:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: Push Markdown to Wiki
-        uses: cmbrose/github-docs-to-wiki@v0.2.0
+    steps:
+      - uses: actions/checkout@v1
+      # Additional steps to generate documentation in "Documentation" directory
+      - name: Publish Markdown to GitHub Wiki
+        uses: barhatsor/github-wiki-publish-action@1.0.7
         with:
-          githubToken: ${{ secrets.GH_PAT }}
-          rootDocsFolder: docs
-          convertRootReadmeToHomePage: false
+          path: "docs"
+        env:
+          GH_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}

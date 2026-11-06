@@ -7,11 +7,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v1
-      # Additional steps to generate documentation in "Documentation" directory
+      - uses: actions/checkout@v4
+
       - name: Publish Markdown to GitHub Wiki
-        uses: barhatsor/github-wiki-publish-action@1.0.7
+        uses: barhatsor/github-wiki-publish-action@v1
         with:
           path: "docs"
-        env:
-          GH_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT }}

@@ -308,16 +308,3 @@ Old numeric PGPLOT codes are translated only under the old names.
 For `plot_counts`, the legacy sum_exp flag remains a no-op, as before.
 `res` is now an active ISISscripts-compatible plotting option: 0 is the
 single-panel default and 1 through 6 add the corresponding residual panel.
-
-## Validation and scope
-
-The tests exercise actual Matplotlib artists, rendering, error-bar controls,
-RGB/custom tuple syntax, subplot reuse, rcParams/color cycling, and inherited
-public preference dictionaries. Separate CIAO integration tests verify actual
-Sherpa preference objects and default IDs; those remain unrun in the current
-environment because Sherpa is unavailable. The numerical suite continues to
-cover unit-independent matching, grouping, normalization, and covariance.
-Model overlays/residual panels are documented in FIT_PLOTTING.md. Unfolded
-spectra, fit-parameter uncertainty bands, and adaptive S/N plot grouping
-remain outside this implementation.
-

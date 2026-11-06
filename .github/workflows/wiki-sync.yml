@@ -1,0 +1,22 @@
+name: Sync Docs to Wiki
+
+on:
+  push:
+    branches:
+      - main     # Triggers when you push to your main branch
+    paths:
+      - 'docs/**' # Only runs if files inside the docs folder change
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Push Markdown to Wiki
+        uses: cmbrose/github-docs-to-wiki@v0.2.0
+        with:
+          githubToken: ${{ secrets.GH_PAT }}
+          rootDocsFolder: docs
+          convertRootReadmeToHomePage: false

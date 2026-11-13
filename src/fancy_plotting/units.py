@@ -82,7 +82,7 @@ def quantity_label(quantity, *powers):
     parts = [unit if power == 1 else rf"{{{unit}}}^{{{power}}}" if unit.startswith(r"\mu")
              else rf"{unit}^{{{power}}}"
              for unit, power in powers if power]
-    return quantity if not parts else quantity + r" ($" + r"\,".join(parts) + r"$)"
+    return quantity if not parts else quantity + r"$" + r"\,".join(parts) + r"$"
 
 
 def axis_label(value):

@@ -93,10 +93,13 @@ For raw observed counts D and raw predicted source-aperture counts M:
 - Chi2ModVar uses the propagated total-model count variance. For a native
   Poisson count model this starts as diag(M); fractional rebinning propagates
   it with the same overlap operator, rather than resetting its diagonal.
-- Cash and CStat select `sign(D-M)*sqrt(C_i)` in modes 1/4, or
-  `sign(D-M)*C_i` in modes 2/5, where
-  `C_i = 2*(M-D+D*log(D/M))`. These are deviance diagnostics relative to the
-  saturated model, rather than Sherpa Cash's raw per-bin expression.
+- Cash and CStat use the ISIS convention
+  `DeltaC = sign(D-M) * 2*(M-D+D*log(D/M))`.
+  Modes 1/4 plot `DeltaC / sqrt(abs(DeltaC))`; modes 2/5 plot `DeltaC`.
+  The root expression is defined as zero at `DeltaC=0`. The labels now show
+  these expressions explicitly. This preserves the existing Cash/CStat
+  numerical convention: a signed deviance relative to the saturated model,
+  rather than Sherpa Cash's raw per-bin expression.
 - An explicit `residual_stat='ml'` reproduces the supplied ISISscripts ML
   branch, using `2*sign(D-M)*(M + log(D+1) - D*log(M))` for M>0 in modes 2/5,
   and the signed square root of that term in modes 1/4. For M=0 the D*log(M)
@@ -106,7 +109,7 @@ For raw observed counts D and raw predicted source-aperture counts M:
   claim of a generic mapping for all Sherpa likelihood statistics.
 
 Gaussian standardized residuals have unit marginal error bars. Signed-square
-and Cash/ML diagnostics are histograms without error bars. The lower panel's
+and Cash/ML/WStat diagnostics are histograms without error bars. The lower panel's
 reference line is zero, or one for ratio modes.
 
 For ratios, data-error sigma gives symmetric errors `sigma/(M-B)` for a net
@@ -121,7 +124,7 @@ Cash's zero-count limit is C_i=2M, and an exact D=M match has residual zero,
 including D=M=0. Positive data with zero model are not drawn as finite points.
 Nearly equal large counts use a stable expansion to avoid cancellation.
 
-WStat and other unsupported statistic-to-residual mappings are not silently
+Other unsupported statistic-to-residual mappings are not silently
 treated as Cash or ordinary chi. Choose res=3/6 for a ratio, or explicitly
 choose residual_stat='data' for a measurement-error diagnostic. This does
 not change the fitting statistic. Stored-error Chi2 and covariance chi-square
@@ -131,10 +134,63 @@ variants do not currently have automatic standardized-residual mappings.
 The covariance-aware implementation retains cross-bin correlations when
 coarsening. Pointwise plotted chi values use marginal errors, not a whitened
 residual vector; the displayed squared values therefore need not sum to a
-correlated Gaussian fit statistic. Cash/ML functions applied to fractional
+correlated Gaussian fit statistic. Cash/ML/WStat functions applied to fractional
 matched counts are display diagnostics, not a valid independent-Poisson
 likelihood for those correlated counts. Plotting does not change any fitting
 statistic or remove the previously documented limits of fractional combination.
+
+## WStat and measured Poisson backgrounds
+
+WStat is selected automatically from the Sherpa session, or explicitly with
+`residual_stat='wstat'` on `plot_data`, `plot_counts`, or `plot_unfold`:
+
+```python
+ui.set_stat('wstat')
+root = plot_data(1, res=4)                     # DeltaC / sqrt(abs(DeltaC))
+delta = plot_counts([[1, 2]], res=5)           # DeltaC for the pooled group
+explicit = plot_data(1, res=4, residual_stat='wstat')
+```
+
+The WStat residual includes both source and background Poisson terms. It
+does not use an ordinary Cash deviance with the measured background held
+fixed. Write D for raw on-source counts, S for predicted source counts, B
+for raw off-source counts, and alpha for the off-to-on count scaling:
+
+`alpha = (exposure_src * AREASCAL_src * BACKSCAL_src) /
+         (exposure_bkg * AREASCAL_bkg * BACKSCAL_bkg)`.
+
+Sherpa's middle-of-group rule is used separately for each scale column.
+For profiled expected off-source counts beta, the magnitude is
+`W_i = C(D, S + alpha*beta) + C(B, beta)`, with
+`C(d,m) = 2*(m-d+d*log(d/m))`. The signed quantity is
+`DeltaC = sign(D-S-alpha*B) * W_i`. Zero observed counts and zero source
+predictions use their analytic limits. No Gaussian error bars are attached.
+
+Modes 1/2 use each dataset's count view; modes 4/5 pool on-source counts and
+source predictions in each displayed group. Plot-only rebinning precedes
+profiling. Off-region measurements with different alphas retain separate
+nuisance parameters; equal alphas reduce to one summed off measurement.
+These pooled display diagnostics generally differ from the sum of the
+native fit contributions. With one dataset, native grouping and no extra
+rebinning or matching, their unsigned magnitudes reproduce Sherpa's per-bin
+WStat contributions. Matching that splits channels creates correlated
+fractional counts, so the result remains a display diagnostic.
+
+WStat diagnostics require unsubtracted DataPHA inputs with exactly one
+associated background per dataset, positive scale/exposure values, and no
+fitted background model. Use CStat when fitting a background model.
+Offline SpectrumData lacks the off-region information required for WStat.
+Explicit `models=` arrays retain the ordinary raw-total-count convention;
+the measured background added for display is removed to recover S.
+Upper-panel model display and ratio modes 3/6 retain their usual behavior.
+Plotting never changes the selected fit statistic, filters, grouping,
+subtraction state, or parameter values.
+
+The native-background formula and grouping rules follow
+[Sherpa WStat](https://sherpa.readthedocs.io/en/stable/statistics/api/sherpa.stats.WStat.html).
+Tests include numerical references evaluated by compiling Sherpa's upstream
+`my_calc_w_stat` C++ function, plus native Sherpa integration tests when
+Sherpa is installed.
 
 ## Backgrounds
 

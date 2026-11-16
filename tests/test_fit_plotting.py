@@ -111,6 +111,20 @@ class FitPlottingTests(unittest.TestCase):
             squared = self.plot(1, res=2, residual_stat=stat)
             assert_allclose(squared.residuals[0].y, np.sign(expected)*expected**2)
 
+    def test_cash_combined_modes_use_isis_delta_c_after_summing_and_rebinning(self):
+        self.models[2] = [5, 5]
+        # Pool both datasets, then sum both channels: D=70, M=40.
+        delta = 2*(40-70+70*np.log(70/40))
+        for stat in ("cash", "cstat"):
+            for mode, expected in ((4, delta/np.sqrt(abs(delta))), (5, delta)):
+                result = self.plot([[1, 2]], res=mode, rebin=2, residual_stat=stat)
+                assert_allclose(result.residuals[0].y, [expected])
+                self.assertIn(r"\Delta C", result.residual_ax.get_ylabel())
+                self.assertIsNone(result.residuals[0].yerr)
+                result.figure.canvas.draw()
+        negative = self.plot(1, models={1: [30, 30]}, res=5, rebin=2, residual_stat="cash")
+        assert_allclose(negative.residuals[0].y, [-2*(60-30+30*np.log(.5))])
+
     def test_cash_zero_counts_exact_matches_and_zero_model_limits(self):
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always", RuntimeWarning)
@@ -268,7 +282,9 @@ class FitPlottingTests(unittest.TestCase):
         self.assertFalse(plt.get_fignums())
 
     def test_unsupported_statistic_does_not_masquerade_as_cash(self):
-        with self.assertRaisesRegex(NotImplementedError, "wstat"):
+        with self.assertRaisesRegex(NotImplementedError, "leastsq"):
+            self.plot(1, res=1, residual_stat="leastsq")
+        with self.assertRaisesRegex(ValueError, "associated background"):
             self.plot(1, res=1, residual_stat="wstat")
         ratio = self.plot(1, res=3, residual_stat="wstat")
         assert_allclose(ratio.residuals[0].y, [2, .5])

@@ -69,6 +69,14 @@ def poisson_deviance(data, model):
     return out
 
 
+def signed_root(delta):
+    """ISIS Delta C / sqrt(abs(Delta C)), with the continuous zero limit."""
+    delta = np.asarray(delta, float)
+    out = np.zeros_like(delta)
+    np.divide(delta, np.sqrt(np.abs(delta)), out=out, where=delta != 0)
+    return out
+
+
 def diagnostic(data, model, variance, *, mode, statistic="data", background=None):
     """Return y, asymmetric yerr (or None), and a finite diagnostic mask.
 
@@ -119,7 +127,7 @@ def diagnostic(data, model, variance, *, mode, statistic="data", background=None
             term[positive] -= xlogy(d[positive], m[positive])
             signed = 2*np.sign(d-m)*term
         valid &= np.isfinite(signed)
-        y[valid] = np.sign(signed[valid])*np.sqrt(np.abs(signed[valid])) if kind == 0 else signed[valid]
+        y[valid] = signed_root(signed[valid]) if kind == 0 else signed[valid]
         y[valid & (d == m)] = 0.
     else:
         if family not in ("data", "gehrels", "model"):
@@ -148,7 +156,7 @@ def _expand_prediction(pha, model):
     return full
 
 
-def evaluate_models(session, datasets, *, models=None):
+def evaluate_models(session, datasets, *, models=None, wstat=False):
     """Evaluate available models once per dataset; no session/data writes.
 
     Values returned are raw source-aperture predicted counts. Standard PHA
@@ -183,6 +191,15 @@ def evaluate_models(session, datasets, *, models=None):
     for key, pha in datasets.items():
         if key not in available:
             continue
+        if wstat:
+            if pha.subtracted or len(pha.background_ids) != 1:
+                raise ValueError("WStat residuals require unsubtracted PHA data with exactly one background")
+            try:
+                session.get_bkg_model(key, bkg_id=pha.background_ids[0])
+            except ModelErr:
+                pass
+            else:
+                raise ValueError("use CStat for a modeled background, or remove the background model for WStat")
         additive = np.zeros(len(pha.channel))
         if not pha.background_ids:
             jobs[key] = (pha, session.get_model(key), additive)
@@ -193,7 +210,7 @@ def evaluate_models(session, datasets, *, models=None):
             source = session.get_source(key)
         except (ModelErr, IdentifierErr):
             # Explicit set_full_model: respect the original PHA convention.
-            if pha.subtracted:
+            if pha.subtracted or wstat:
                 additive = background
             jobs[key] = (pha, session.get_model(key), additive)
             continue
@@ -267,9 +284,10 @@ def residual_label(mode, statistic):
     if kind == 2:
         return "Data / model"
     family = statistic_kind(statistic)
-    if family in ("cash", "ml"):
-        term = "C" if family == "cash" else "ML"
-        return rf"Signed $\sqrt{{\Delta {term}}}$" if kind == 0 else rf"Signed $\Delta {term}$"
+    if family in ("cash", "wstat"):
+        return r"$\Delta C / \sqrt{|\Delta C|}$" if kind == 0 else r"$\Delta C$"
+    if family == "ml":
+        return r"Signed $\sqrt{\Delta ML}$" if kind == 0 else r"Signed $\Delta ML$"
     return r"$\chi$" if kind == 0 else r"Signed $\chi^2$"
 
 
@@ -349,7 +367,8 @@ def preflight_axes(ax, residual_ax, res, statistic, signature, reuse):
             raise ValueError("overplotted residual panels must use the same diagnostic and statistic")
 
 
-def make_diagnostics(members, raw, net, models, options, mode, statistic, group_index, unit, channel_bounds):
+def make_diagnostics(members, raw, net, models, options, mode, statistic, group_index, unit, channel_bounds,
+                     wstat_inputs=None):
     """Rebin counts first; modes 1-3 remain per-member, 4-6 sum members."""
     from .plotting import _aggregate
     blocks = [tuple(range(len(members)))] if mode > 3 else [(i,) for i in range(len(members))]
@@ -357,13 +376,21 @@ def make_diagnostics(members, raw, net, models, options, mode, statistic, group_
     for block in blocks:
         ids = tuple(members[i] for i in block)
         opts = {**options, "combine": "sum", "scale": 1., "offset": 0., "label": None}
-        data = _aggregate(ids, [raw[i] for i in block], opts, False, False, unit, channel_bounds)
+        data, order = _aggregate(ids, [raw[i] for i in block], opts, False, False, unit, channel_bounds,
+                                 _return_order=True)
         measured = _aggregate(ids, [net[i] for i in block], opts, False, False, unit, channel_bounds)
         model = _aggregate(ids, [models[i] for i in block], opts, False, False, unit, channel_bounds)
         variance = model.yerr**2 if statistic == "model" else measured.yerr**2
         background = data.y-measured.y if options["subtract_background"] or options.get("background_only", False) else None
-        y, yerr, valid = diagnostic(data.y, model.y, variance, mode=mode,
-                                    statistic=statistic, background=background)
+        if statistic == "wstat" and (mode-1) % 3 != 2:
+            from ._wstat import pooled_diagnostic
+            canonical = _aggregate(ids, [raw[i] for i in block], opts, False, False, raw[block[0]].unit)
+            signed = pooled_diagnostic(canonical, [wstat_inputs[i] for i in block])[order]
+            y = signed_root(signed) if (mode-1) % 3 == 0 else signed
+            yerr, valid = None, np.isfinite(y)
+        else:
+            y, yerr, valid = diagnostic(data.y, model.y, variance, mode=mode,
+                                        statistic=statistic, background=background)
         output.append(ResidualCurve(ids, data.lo, data.hi, y, yerr, valid, mode, statistic,
                                     group_index, measured.label))
     return output
@@ -402,7 +429,7 @@ def render_residuals(data_ax, ax, curves, styles, data_artists, mode, statistic,
         reference = ax.axhline(baseline, color="0.45", linewidth=1, linestyle="--", label="_nolegend_")
         ax._fancy_plotting_reference_line = reference
     output = []
-    histogram = (mode-1) % 3 == 1 or (statistic in ("cash", "ml") and (mode-1) % 3 != 2)
+    histogram = (mode-1) % 3 == 1 or (statistic in ("cash", "ml", "wstat") and (mode-1) % 3 != 2)
     for curve, override in zip(curves, styles):
         color = data_artists[curve.group_index][0].get_color()
         style = _style({**_CURVE, "color": color, "marker": "None" if histogram else "o",

@@ -946,6 +946,72 @@ class SherpaFitPlottingTests(unittest.TestCase):
         self.assertEqual(result.residuals[0].statistic, "cash")
         assert_allclose(result.residuals[0].y, expected, rtol=2e-12)
 
+    def test_wstat_residuals_match_sherpa_with_grouping_filters_and_scales(self):
+        from sherpa.stats import WStat
+        pha = self.phas[0]
+        bkg = make_pha("wstat_bg", 32, 8, 1300)
+        bkg.counts = np.array([0, 4, 2, 8, 0, 7, 3, 1.])
+        bkg.areascal = np.linspace(.7, 1.3, 8)
+        bkg.backscal = np.linspace(2, 3, 8)
+        pha.backscal = np.linspace(.3, .5, 8)
+        pha.set_background(bkg)
+        self.session.set_stat("wstat")
+        for grouped in (False, True):
+            if grouped:
+                pha.grouping = np.tile([1, -1], 4)
+                pha.group()
+                pha.notice(1.3, 6.)
+            stat, vector = WStat().calc_stat(pha, self.session.get_model(1))
+            snapshot = (pha.counts.copy(), pha.mask, pha.units, pha.grouped, pha.subtracted,
+                        bkg.counts.copy(), tuple(p.val for p in self.source.pars))
+            for mode in (1, 2, 4, 5):
+                result = plot_data(1, session=self.session, res=mode)
+                self.assertEqual(result.residuals[0].statistic, "wstat")
+                values = np.abs(result.residuals[0].y)
+                assert_allclose(values, vector if mode in (1, 4) else vector**2, rtol=2e-10)
+                assert_allclose(np.sum(values**2 if mode in (1, 4) else values), stat, rtol=2e-10)
+                self.assertIsNone(result.residuals[0].yerr)
+                result.figure.canvas.draw()
+            assert_array_equal(pha.counts, snapshot[0])
+            assert_array_equal(pha.mask, snapshot[1])
+            self.assertEqual((pha.units, pha.grouped, pha.subtracted), snapshot[2:5])
+            assert_array_equal(bkg.counts, snapshot[5])
+            self.assertEqual(tuple(p.val for p in self.source.pars), snapshot[6])
+
+    def test_wstat_combined_rebin_unit_changes_and_counts_unfold_share_residuals(self):
+        from fancy_plotting import plot_unfold
+        for key, pha in enumerate(self.phas, 1):
+            bkg = make_pha(f"wstat_bg_{key}", 32, len(pha.channel), 700+key*100)
+            bkg.counts = np.arange(len(pha.channel), dtype=float)
+            bkg.backscal = 2.+key
+            pha.backscal = 1.
+            pha.set_background(bkg)
+        self.session.set_stat("wstat")
+        match_dataset_grids([1, 2], session=self.session).set_source(self.source)
+        self.source.calls = 0
+        baseline = plot_data([[1, 2]], session=self.session, res=5, rebin=3)
+        self.assertEqual(self.source.calls, 1)
+        for unit in ("energy", "wavelength", "channel"):
+            self.session.set_analysis(unit)
+            for plot in (plot_data, plot_counts, plot_unfold):
+                result = plot([[1, 2]], session=self.session, res=5, rebin=3)
+                expected = baseline.residuals[0].y[::-1] if unit == "wavelength" else baseline.residuals[0].y
+                assert_allclose(result.residuals[0].y, expected, rtol=2e-10)
+
+    def test_wstat_rejects_subtracted_and_modeled_background_before_drawing(self):
+        pha = self.phas[0]
+        bkg = make_pha("wstat_bg", 32, 8, 1300)
+        bkg.counts = np.ones(8)
+        pha.set_background(bkg)
+        self.session.set_stat("wstat")
+        pha.subtract()
+        with self.assertRaisesRegex(ValueError, "unsubtracted"):
+            plot_data(1, session=self.session, res=4)
+        pha.unsubtract()
+        self.session.set_bkg_source(1, CountingPowerLaw("bg_source"))
+        with self.assertRaisesRegex(ValueError, "modeled background"):
+            plot_data(1, session=self.session, res=4)
+
     def test_background_subtraction_is_consistent_for_data_model_and_residual(self):
         pha = self.phas[0]
         background = make_pha("bg", 32, 8, 500)

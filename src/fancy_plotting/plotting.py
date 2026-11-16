@@ -417,7 +417,8 @@ def _coarsen(lo, hi, y, variance, factor, breaks=None):
             np.array([variance[i:j].sum() for i, j in bins]))
 
 
-def _aggregate(members, spectra, options, rate, density, unit=None, channel_bounds=None, plot_factor=0):
+def _aggregate(members, spectra, options, rate, density, unit=None, channel_bounds=None, plot_factor=0,
+               _return_order=False):
     first = spectra[0]
     for data in spectra[1:]:
         if data.lo.shape != first.lo.shape or not (
@@ -487,7 +488,8 @@ def _aggregate(members, spectra, options, rate, density, unit=None, channel_boun
     if not isinstance(label, str):
         raise ValueError("each label must be a string or None")
     covariance = covariance*scale**2
-    return PlotCurve(members, lo, hi, y*scale + offset, np.sqrt(covariance.diagonal()), mode, label, covariance)
+    curve = PlotCurve(members, lo, hi, y*scale + offset, np.sqrt(covariance.diagonal()), mode, label, covariance)
+    return (curve, order) if _return_order else curve
 
 
 def _style(options):
@@ -597,6 +599,9 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
     res=1/2/3 shows individual chi/signed-chi-square/ratio
     diagnostics; res=4/5/6 calculates them for each displayed group. Cash
     and CStat select signed deviance diagnostics for the first two kinds.
+    WStat profiles the associated Poisson background. Cash/CStat/WStat use
+    Delta C / sqrt(abs(Delta C)) for res=1/4 and Delta C for res=2/5,
+    where Delta C is the signed per-bin deviance. Exact matches yield zero.
     Offline models maps IDs to folded count arrays in the input bins.
     background='subtract'/'include'/'only' selects the upper-panel measured
     counts; background-only display suppresses its model overlay.
@@ -696,7 +701,8 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
         check_linear_response(session, (key for members in groups for key in members))
     needed = dict.fromkeys(key for members, item in zip(groups, options)
                            if res or item["show_model"] is not False for key in members)
-    predictions = evaluate_models(session, {key: get_data(key) for key in needed}, models=models)
+    wstat = stat_kind == "wstat" and res not in (0, 3, 6)
+    predictions = evaluate_models(session, {key: get_data(key) for key in needed}, models=models, wstat=wstat)
     intrinsic = {}
     if unfold is not None and unfold.model_display == "source":
         source_ids = dict.fromkeys(key for members, item in zip(groups, options)
@@ -737,7 +743,7 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
         elif unfold is not None and unit == "channel":
             channel_bounds = _reference_channels(inputs[0])
         spectra, raw_spectra, net_spectra, predicted_spectra, display_models = [], [], [], [], []
-        weight_spectra = []
+        weight_spectra, wstat_inputs = [], []
         for key, data in zip(members, inputs):
             read_unit = match_unit if align or unit != "channel" or unfold is not None else unit
             cache_key = (key, item["subtract_background"], item["error_method"],
@@ -763,6 +769,9 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
                     weighted = _align_spectrum(weighted, target, match_unit, item)
                 weight_spectra.append(weighted)
             if has_models:
+                if wstat:
+                    from ._wstat import read_wstat_input
+                    wstat_inputs.append(read_wstat_input(data, predictions[key], read_unit, item, raw=align))
                 def selected_view(subtract):
                     opt = {**item, "subtract_background": subtract, "background_only": False}
                     native = _convert(data, read_unit) if isinstance(data, SpectrumData) else \
@@ -821,7 +830,8 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
             model_curves.append(None)
         if res and has_models:
             residual_curves.extend(make_diagnostics(members, raw_spectra, net_spectra, predicted_spectra,
-                                                    item, res, stat_kind, group_index, unit, channel_bounds))
+                                                    item, res, stat_kind, group_index, unit, channel_bounds,
+                                                    wstat_inputs=wstat_inputs))
 
     from matplotlib import pyplot as plt
     reuse = global_options["overplot"] or not global_options["clearwindow"]

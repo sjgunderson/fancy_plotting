@@ -303,7 +303,10 @@ def prepare_axes(ax, residual_ax, *, res, reuse):
     if ax is None:
         if residual_ax is not None:
             raise ValueError("provide a data ax together with residual_ax")
-        ax = plt.gca() if reuse else plt.subplots()[1]
+        if reuse:
+            ax = plt.gca()
+        else:
+            _, ax = plt.subplots(layout="constrained") if res else plt.subplots()
     if not res:
         previous = getattr(ax, "_fancy_plotting_residual_ax", None)
         if previous is not None and not reuse:
@@ -318,7 +321,7 @@ def prepare_axes(ax, residual_ax, *, res, reuse):
             else:
                 previous.clear()
             ax._fancy_plotting_residual_ax = None
-            ax.tick_params(axis="x", labelbottom=True)
+            ax.tick_params(axis="x", which="both", labelbottom=True)
         return ax, None
     if residual_ax is None:
         residual_ax = getattr(ax, "_fancy_plotting_residual_ax", None)
@@ -457,6 +460,8 @@ def render_residuals(data_ax, ax, curves, styles, data_artists, mode, statistic,
     ax.set_xlabel(xlabel)
     ax.set_xlim(data_ax.get_xlim())
     data_ax.set_xlabel("")
-    data_ax.tick_params(axis="x", labelbottom=False)
+    # Log axes can label minor ticks as well as major ticks. Hide both
+    # without changing the formatter shared with the residual panel.
+    data_ax.tick_params(axis="x", which="both", labelbottom=False, labeltop=False)
     return output, reference
 

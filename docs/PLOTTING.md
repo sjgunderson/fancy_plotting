@@ -265,6 +265,8 @@ Sherpa's `set_analysis` and omit it.
 `PlotResult` contains:
 
 - `ax` and `figure`: the actual Matplotlib objects.
+- `axes`: a tuple containing this plot's data axis and optional residual axis,
+  in display order. Use `data_ax, residual_ax = result.axes` with `res>0`.
 - `curves`: plotted bin edges, values, uncertainties, memberships, normalization,
   and sparse covariance.
 - `lines`: one histogram Line2D per displayed curve.

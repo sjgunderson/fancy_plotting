@@ -242,6 +242,47 @@ subplot's area; unrelated subplots remain intact. With no axes, both panels
 are created automatically. The upper X labels are hidden and the lower panel
 receives the analysis-unit label. The lower Y axis is always linear.
 
+Every plotting function (`plot_data`, `plot_counts`, and `plot_unfold`) returns
+the actual Matplotlib axes. `result.ax` is the upper panel and
+`result.residual_ax` is the lower panel. `result.axes` returns `(data_ax,
+residual_ax)` in that order, or `(data_ax,)` when `res=0`. This tuple contains
+only that call's panels, even when the figure contains several plots.
+
+New figures created for residual plots use Matplotlib's constrained layout
+engine. The two panels share their X axis, and both major and minor X tick
+labels are hidden on the upper panel, including on logarithmic axes. The
+X-axis title appears only below the residual panel. Figures supplied through
+`ax` keep their existing layout engine; create them with
+`plt.subplots(..., layout='constrained')` to enable automatic spacing.
+
+For two plots side by side, supply one subplot to each call. Each subplot is
+split into its own data/residual pair, and labels can then be edited separately:
+
+```python
+from matplotlib import pyplot as plt
+import fancy_plotting as fp
+
+fig, slots = plt.subplots(1, 2, figsize=(12, 5), layout='constrained')
+left = fp.plot_data([[1, 2]], ax=slots[0], res=4)
+right = fp.plot_data([[3, 4]], ax=slots[1], res=4)
+
+right_data, right_residual = right.axes
+right_data.set_ylabel('')
+right_residual.set_ylabel('')
+for panel in right.axes:
+    panel.tick_params(axis='y', which='both', labelleft=False)
+
+left.residual_ax.set_ylim(-5, 5)
+right_residual.set(xlabel='Energy (keV)', ylim=(-3, 3))
+```
+
+Use `set_ylabel('')` to remove an axis title and `tick_params` to hide tick
+labels. To show the upper X tick labels again explicitly, use
+`result.ax.tick_params(axis='x', which='both', labelbottom=True)`.
+For complete control of panel sizes or placement, build both axes yourself
+and pass `ax=(data_ax, residual_ax)`. To tune automatic spacing, use
+`fig.get_layout_engine().set(h_pad=0.02, w_pad=0.04)`; these pads are in inches.
+
 `overplot=True` reuses the linked lower panel and its reference line. Incompatible
 analysis units or residual families/statistics are rejected before existing
 artists are changed. Replacing an automatic two-panel plot with res=0 removes
@@ -261,6 +302,7 @@ input bins; DataPHA arrays must cover the full original channel array.
 
 PlotResult retains ax, figure, curves, lines, errorbars, and artists, and adds:
 
+- axes, a tuple of this plot's data and optional residual panels in display order.
 - model_curves and model_artists, one per upper data curve (None where absent).
 - residual_ax, residuals, and residual_artists.
 - reference_line for the lower panel.
@@ -276,6 +318,8 @@ any Matplotlib axis clipping; original data and parameter values stay unchanged.
 Matplotlib comparison of individual, combined, and ratio residual panels.
 `examples/ciao_fit_plotting_demo.py` prepares synthetic PHA/ARF/RMF datasets,
 attaches a shared model, and displays all six modes under CStat in CIAO.
+`examples/residual_panels_demo.py` demonstrates two plots side by side,
+logarithmic minor ticks, and independent panel labels without Sherpa.
 
 The numerical/rendering tests exercise the actual normalization, regrid,
 covariance, diagnostic, and Matplotlib code. Separate integration tests cover

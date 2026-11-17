@@ -125,6 +125,15 @@ class PlotResult:
         return self.ax.figure
 
     @property
+    def axes(self):
+        """This plot's Axes in display order: data, then residuals if present.
+
+        Unlike figure.axes, this excludes axes belonging to other plots.
+        Existing ax and residual_ax attributes remain directly available.
+        """
+        return (self.ax,) if self.residual_ax is None else (self.ax, self.residual_ax)
+
+    @property
     def lines(self):
         """The histogram Line2D artists, one per displayed curve."""
         return tuple(line for line, _ in self.artists)
@@ -607,6 +616,11 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
     counts; background-only display suppresses its model overlay.
     Returns data/model/residual arrays, Axes, and Matplotlib artists. No
     fit is run and loaded PHA arrays/analysis/grouping/filters are preserved.
+    result.ax and result.residual_ax expose each panel; result.axes returns
+    them in display order. Pass ax=(data_ax, residual_ax) to use an existing
+    pair, or one ax to split that subplot. New residual figures use constrained
+    layout; supplied figures retain their layout engine. Upper X tick labels
+    (major and minor) are hidden; the X-axis label goes on the residual panel.
     """
     from ._fit_plot import (evaluate_models, statistic_kind, component_styles, prepare_axes, preflight_axes,
                             ModelCurve, make_diagnostics, render_models, render_residuals)

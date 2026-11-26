@@ -27,7 +27,7 @@ def main():
         ui.set_data(i, pha)
 
     group = match_dataset_grids([1, 2, 3, 4])
-    prepared = combine_datasets(group)  # joint mode also works before a model exists
+    prepared = combine_datasets(group, mode="joint")  # native joint likelihood
     assert group.shared is None and prepared.shared is None
     print("Prepared common grid with", group.grid.size, "bins, without a model")
 

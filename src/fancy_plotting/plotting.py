@@ -8,7 +8,8 @@ import numpy as np
 from scipy import sparse
 
 from .grid import EnergyGrid
-from .resample import OverlapRebin, diagonal_covariance, get_data_match, _MATCH_COORDINATE
+from .resample import (OverlapRebin, GroupedOverlapRebin, diagonal_covariance,
+                       get_data_match, _MATCH_COORDINATE)
 from .units import (HC_KEV_ANGSTROM, normalize_unit, unit_family,
                     axis_label, convert_bins, quantity_label, unit_mathtext)
 from ._plot_compat import translate_legacy
@@ -311,15 +312,36 @@ def _background_arrays(pha, options):
     return counts, variance
 
 
-def _read_pha(pha, unit, options, raw=False, values=None):
+def _areascal_divisor(pha):
+    """ISIS apply_areascale: only finite, nonzero AREASCAL values divide data."""
+    area = np.broadcast_to(np.asarray(1. if pha.areascal is None else pha.areascal,
+                                      dtype=float), np.asarray(pha.channel).shape)
+    return np.where(np.isfinite(area) & (area != 0), area, 1.)
+
+
+def _apply_isis_areascal(pha):
+    divisor = _areascal_divisor(pha)
+    pha.counts = np.asarray(pha.counts, dtype=float)/divisor
+    if pha.staterror is not None:
+        pha.staterror = np.asarray(pha.staterror, dtype=float)/divisor
+    pha.areascal = 1.
+    return divisor
+
+
+def _read_pha(pha, unit, options, raw=False, values=None, *, unfiltered=False, isis_areascal=False):
     """Sherpa's data methods perform grouping/filtering and background scaling."""
     from sherpa.astro import hc
     from sherpa.astro.data import DataPHA
     if not isinstance(pha, DataPHA):
         raise TypeError("plot_data currently accepts DataPHA or SpectrumData datasets")
     data = deepcopy(pha)
+    divisor = 1.
+    if isis_areascal:
+        divisor = _apply_isis_areascal(data)
+        for bid in data.background_ids:
+            _apply_isis_areascal(data.get_background(bid))
     if values is not None:
-        values = _array(values, len(data.channel), "model counts")
+        values = _array(values, len(data.channel), "model counts")/divisor
         data.counts = values.copy()
         data.staterror = np.sqrt(np.maximum(values, 0.))
         data.syserror = None
@@ -330,7 +352,7 @@ def _read_pha(pha, unit, options, raw=False, values=None):
         data.syserror = None
         options = {**options, "subtract_background": False}
     if raw:
-        selected = np.array(data.get_noticed_channels(), copy=True)
+        selected = np.array(data.channel if unfiltered else data.get_noticed_channels(), copy=True)
         data.ungroup()
         data.quality_filter = None
         data.mask = np.isin(data.channel, selected)
@@ -349,6 +371,8 @@ def _read_pha(pha, unit, options, raw=False, values=None):
     counts = data.get_dep(filter=True)
     method = options["error_method"]
     staterrfunc = None if method == "stored" else lambda x: _error(x, method)
+    if isis_areascal and method == "sqrt":
+        staterrfunc = lambda x: np.sqrt(np.maximum(x, 1.))
     error = data.get_staterror(filter=True, staterrfunc=staterrfunc)
     if error is None:
         raise ValueError("statistical errors unavailable; choose sqrt or gehrels")
@@ -366,9 +390,61 @@ def _read_pha(pha, unit, options, raw=False, values=None):
                                 np.asarray(error)[order], analysis, hc=hc), unit)
 
 
+@dataclass
+class _MatchedTarget:
+    spectrum: SpectrumData
+    native_grid: EnergyGrid
+    grouping: object
+
+    def __getattr__(self, name):
+        return getattr(self.spectrum, name)
+
+
+def _matched_target(reference, unit, options):
+    """Full reference geometry and exact current grouping/quality membership."""
+    if isinstance(reference, SpectrumData):
+        return _convert(reference, unit)
+    output = _read_pha(reference, unit, options, isis_areascal=True)
+    full = _read_pha(reference, unit, options, raw=True, unfiltered=True, isis_areascal=True)
+    view = deepcopy(reference)
+    view.set_analysis("energy")
+    elo, ehi = view._get_ebins(group=False)
+    native_order = np.argsort(elo)
+    _, _, permutation = convert_bins(np.asarray(elo)[native_order], np.asarray(ehi)[native_order],
+                                      "energy", unit, hc=output.hc)
+    native_order = native_order[permutation]
+    indices = np.arange(len(view.channel))
+    starts = np.asarray(view.apply_filter(indices, view._min), dtype=int)
+    stops = np.asarray(view.apply_filter(indices, view._max), dtype=int)
+    glo = np.asarray(view.apply_filter(elo, view._min))
+    ghi = np.asarray(view.apply_filter(ehi, view._max))
+    group_order = np.argsort(glo)
+    _, _, permutation = convert_bins(glo[group_order], ghi[group_order], "energy", unit, hc=output.hc)
+    group_order = group_order[permutation]
+    # Native channel order, rather than physical bounds, identifies membership
+    # when ignore_bad has removed channels in the middle of a group.
+    group = np.searchsorted(stops, indices)
+    safe = np.minimum(group, len(stops)-1)
+    included = ((group < len(stops)) & (indices >= starts[safe]) &
+                np.isin(view.channel, view.get_noticed_channels()))
+    inverse_native = np.argsort(native_order)
+    inverse_group = np.argsort(group_order)
+    matrix = sparse.csr_matrix((np.ones(included.sum()),
+                                (inverse_group[group[included]], inverse_native[indices[included]])),
+                               shape=(len(output.lo), len(full.lo)))
+    return _MatchedTarget(output, EnergyGrid(full.lo, full.hi), matrix)
+
+
+def _alignment_projection(source, target):
+    grid = EnergyGrid(target.lo, target.hi)
+    if isinstance(target, _MatchedTarget):
+        return GroupedOverlapRebin(source, target.native_grid, grid, target.grouping)
+    return OverlapRebin(source, grid)
+
+
 def _align_spectrum(data, target, unit, options):
     data = _convert(data, unit)
-    mapping = OverlapRebin(EnergyGrid(data.lo, data.hi), EnergyGrid(target.lo, target.hi))
+    mapping = _alignment_projection(EnergyGrid(data.lo, data.hi), target)
     error = data.staterror if data.staterror is not None else _error(data.counts, options["error_method"])
     covariance = data.covariance if data.covariance is not None else diagonal_covariance(error**2)
     covariance = mapping.covariance(covariance)
@@ -702,7 +778,11 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
     needed = dict.fromkeys(key for members, item in zip(groups, options)
                            if res or item["show_model"] is not False for key in members)
     wstat = stat_kind == "wstat" and res not in (0, 3, 6)
-    predictions = evaluate_models(session, {key: get_data(key) for key in needed}, models=models, wstat=wstat)
+    unfiltered_ids = {key for key in needed if global_options["align"] is not False and
+                      (global_options["align"] is True or global_options["reference"] is not None or
+                       get_data_match(get_data(key)) is not None)}
+    predictions = evaluate_models(session, {key: get_data(key) for key in needed}, models=models,
+                                  wstat=wstat, unfiltered_ids=unfiltered_ids)
     intrinsic = {}
     if unfold is not None and unfold.model_display == "source":
         source_ids = dict.fromkeys(key for members, item in zip(groups, options)
@@ -732,8 +812,7 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
             target_key = ("target", id(reference), match_unit)
             if target_key not in cache:
                 target_options = {**item, "error_method": "sqrt"}
-                cache[target_key] = _convert(reference, match_unit) if isinstance(reference, SpectrumData) else \
-                    _read_pha(reference, match_unit, target_options)
+                cache[target_key] = _matched_target(reference, match_unit, target_options)
             target = cache[target_key]
             if unit == "channel":
                 channel_key = ("channels", id(reference))
@@ -754,7 +833,8 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
                                         np.zeros(len(data.lo)), data.unit, hc=data.hc) if item["background_only"] else data
                     cache[cache_key] = _convert(view, read_unit)
                 else:
-                    cache[cache_key] = _read_pha(data, read_unit, item, raw=align)
+                    cache[cache_key] = _read_pha(data, read_unit, item, raw=align, unfiltered=align,
+                                               isis_areascal=align)
             spectrum = cache[cache_key]
             if align:
                 spectrum = _align_spectrum(spectrum, target, match_unit, item)
@@ -763,7 +843,8 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
                 weight_key = ("unfold_weights", key, item["exposure_source"], read_unit, align)
                 if weight_key not in cache:
                     values = weights_for(key, data, response_weights, item["exposure_source"])
-                    cache[weight_key] = weight_view(data, values, read_unit, item, raw=align)
+                    cache[weight_key] = weight_view(data, values, read_unit, item, raw=align,
+                                                   unfiltered=align, isis_areascal=align)
                 weighted = cache[weight_key]
                 if align:
                     weighted = _align_spectrum(weighted, target, match_unit, item)
@@ -771,11 +852,12 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
             if has_models:
                 if wstat:
                     from ._wstat import read_wstat_input
-                    wstat_inputs.append(read_wstat_input(data, predictions[key], read_unit, item, raw=align))
+                    wstat_inputs.append(read_wstat_input(data, predictions[key], read_unit, item,
+                                                        raw=align, unfiltered=align, isis_areascal=align))
                 def selected_view(subtract):
                     opt = {**item, "subtract_background": subtract, "background_only": False}
                     native = _convert(data, read_unit) if isinstance(data, SpectrumData) else \
-                        _read_pha(data, read_unit, opt, raw=align)
+                        _read_pha(data, read_unit, opt, raw=align, unfiltered=align, isis_areascal=align)
                     return _align_spectrum(native, target, match_unit, opt) if align else native
                 raw_data, net_data = selected_view(False), selected_view(True)
                 values = predictions[key]
@@ -783,7 +865,8 @@ def _plot_spectra(ids=None, *, session=None, datasets=None, ax=None,
                     predicted = _convert(SpectrumData(data.lo, data.hi, values, data.exposure,
                                                       np.sqrt(np.maximum(values, 0.)), data.unit, hc=data.hc), read_unit)
                 else:
-                    predicted = _read_pha(data, read_unit, item, raw=align, values=values)
+                    predicted = _read_pha(data, read_unit, item, raw=align, values=values,
+                                          unfiltered=align, isis_areascal=align)
                 if align:
                     predicted = _align_spectrum(predicted, target, match_unit, item)
                 background = raw_data.counts-net_data.counts

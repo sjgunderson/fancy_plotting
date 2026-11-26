@@ -76,6 +76,15 @@ are required by matching, and no rematching is needed after an analysis
 change. Rate/counts and the positive plot factor come from the first displayed
 PHA (or an explicit plotting reference); see [UNITS.md](UNITS.md).
 
+Matched PHA plots follow ISIS's loading convention: counts and stored errors
+are divided by native AREASCAL before regridding, and backgrounds are
+corrected independently. Folded models and unfolding weights receive the
+same native correction. The full reference grid is matched first; its current
+grouping, quality mask, and notice/ignore selection are then applied exactly.
+Grouping and selecting after matching is supported. Original PHA arrays and
+metadata remain untouched. See [GRID_MATCHING.md](GRID_MATCHING.md) for the
+distinction between this view, native joint fitting, and raw-count snapshots.
+
 ## Dataset and group syntax
 Example options for combining 4 spectra loaded into Sherpa are below. All three `plot_*`
 functions accept an arbitrary number of spectra and combinations, including repeated

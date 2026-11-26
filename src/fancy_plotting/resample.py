@@ -62,6 +62,32 @@ class OverlapRebin:
         return (self.matrix @ covariance @ self.matrix.T).tocsr()
 
 
+class GroupedOverlapRebin(OverlapRebin):
+    """Match full reference channels, then apply their exact group membership.
+
+    A group's bounding interval is insufficient: quality filtering can remove
+    channels inside it, and a calibration grid can contain gaps. Composing
+    the two operators keeps those holes out of both counts and predictions.
+    """
+
+    def __init__(self, source, reference, target, grouping):
+        native = OverlapRebin(source, reference)
+        grouping = sparse.csr_matrix(grouping)
+        if grouping.shape != (target.size, reference.size):
+            raise ValueError("group membership must map reference channels to output bins")
+        if np.any(grouping.data != 1) or np.any(np.asarray(grouping.sum(axis=0)) > 1):
+            raise ValueError("each reference channel may belong to at most one group")
+        self.source, self.target = source, target
+        self.reference = reference
+        self.grouping = grouping
+        self.native_matrix = native.matrix
+        self.matrix = (grouping @ native.matrix).tocsr()
+        close = np.isclose(self.matrix.data, 1., rtol=0, atol=64*np.finfo(float).eps)
+        self.matrix.data[close] = 1.
+        self.fractional = bool(np.any(self.matrix.data != 1.))
+        self.source_coverage = np.asarray(self.matrix.sum(axis=0)).ravel()
+
+
 def diagonal_covariance(variance):
     variance = np.asarray(variance, dtype=float)
     if variance.ndim != 1 or np.any(variance < 0) or not np.isfinite(variance).all():

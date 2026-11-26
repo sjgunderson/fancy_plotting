@@ -91,6 +91,11 @@ Let $L_i$ represent the operation of matching into a common physical
 reference, and $G$ the operation of whole-bin plot grouping. For the
 default background-subtracted view:
 
+When matching is active, $L_i$ includes division by the native AREASCAL
+before overlap matching. This applies to counts, folded models, and response
+weights equally. The reference's exact channel membership and selection
+are applied after matching, so excluded channels inside groups stay excluded.
+
 $$
 N=\sum_i GL_i(C_i-B_i),\qquad
 W=\sum_i GL_iW_i,\qquad n_\lambda=N/W.

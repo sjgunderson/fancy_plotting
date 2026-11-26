@@ -178,12 +178,13 @@ def weights_for(key, data, supplied, exposure_source):
     return response_weights(data, exposure_source, hc=hc)
 
 
-def weight_view(data, values, unit, options, *, raw=False):
+def weight_view(data, values, unit, options, *, raw=False, unfiltered=False, isis_areascal=False):
     if isinstance(data, SpectrumData):
         return _convert(SpectrumData(data.lo, data.hi, values, staterror=np.zeros(len(values)),
                                      unit=data.unit, hc=data.hc), unit)
     from .plotting import _read_pha
-    spectrum = _read_pha(data, unit, options, raw=raw, values=values)
+    spectrum = _read_pha(data, unit, options, raw=raw, values=values,
+                          unfiltered=unfiltered, isis_areascal=isis_areascal)
     return replace(spectrum, staterror=np.zeros(len(spectrum.lo)), covariance=None)
 
 

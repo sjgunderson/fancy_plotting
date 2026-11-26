@@ -76,7 +76,7 @@ class WStatInput:
     alpha: np.ndarray
 
 
-def read_wstat_input(pha, total, unit, options, *, raw=False):
+def read_wstat_input(pha, total, unit, options, *, raw=False, unfiltered=False, isis_areascal=False):
     """Read source/off counts with Sherpa's grouping, filters and scale rules."""
     from .plotting import SpectrumData, _read_pha, _convert
 
@@ -92,11 +92,21 @@ def read_wstat_input(pha, total, unit, options, *, raw=False):
     if not np.array_equal(pha.channel, bkg.channel):
         raise ValueError("WStat background channels must match the source channels")
     measured = np.asarray(pha.get_background_scale(bid, units="counts", group=False, filter=False)) * bkg.counts
-    source = _read_pha(pha, unit, options, raw=raw, values=np.asarray(total)-measured)
-    background = _read_pha(pha, unit, options, raw=raw, values=bkg.counts)
+    source = _read_pha(pha, unit, options, raw=raw, values=np.asarray(total)-measured,
+                       unfiltered=unfiltered, isis_areascal=isis_areascal)
+    off = bkg.counts
+    if isis_areascal:
+        from .plotting import _areascal_divisor
+        off = off*_areascal_divisor(pha)/_areascal_divisor(bkg)
+    background = _read_pha(pha, unit, options, raw=raw, values=off,
+                           unfiltered=unfiltered, isis_areascal=isis_areascal)
     view = deepcopy(pha)
+    if isis_areascal:
+        view.areascal = 1.
+        bkg = deepcopy(bkg)
+        bkg.areascal = 1.
     if raw:
-        noticed = view.get_noticed_channels()
+        noticed = view.channel if unfiltered else view.get_noticed_channels()
         view.ungroup()
         view.quality_filter = None
         view.mask = np.isin(view.channel, noticed)

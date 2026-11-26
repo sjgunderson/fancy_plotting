@@ -43,7 +43,7 @@ class SherpaJointFittingTests(unittest.TestCase):
 
     def group(self):
         group = match_dataset_grids(list(self.phas), session=self.session).set_source(self.source)
-        return combine_datasets(group)
+        return combine_datasets(group, mode="joint")
 
     def compare_with_ui(self):
         # Compare ordinary response folding with the shared-grid adapter,

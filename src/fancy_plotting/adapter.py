@@ -151,6 +151,7 @@ class DatasetGroup:
     sources: dict = field(default_factory=dict, init=False)
     models: dict = field(default_factory=dict, init=False)
     data_match: object = field(default=None, init=False)
+    combination_mode: str = field(default="joint", init=False)
 
     @property
     def grid(self):
@@ -205,7 +206,13 @@ class DatasetGroup:
         self.shared.clear_cache()
 
     def make_fit(self, stat=None, method=None):
-        """Construct a joint Fit on the original PHA datasets.
+        """Construct a Fit using the current combination mode and selection.
+
+        After combine_datasets(mode="isis"), sum matched data and folded
+        models before calculating the statistic. The returned Fit freezes
+        the current grouping/filtering; call make_fit again after changes.
+        Ordinary ui.fit remains joint. The following settings describe
+        mode="joint" (also used when no combination has been requested).
 
         UI-backed groups inherit the session's statistic, optimizer, and
         iterative-fit settings, including simultaneous background models.
@@ -218,6 +225,8 @@ class DatasetGroup:
         an explicit statistic, e.g. ``WStat()`` for unsubtracted Poisson
         backgrounds or an appropriate chi-square statistic after subtraction.
         """
+        if self.combination_mode == "isis":
+            return _make_isis_fit(self, stat=stat, method=method)
         self._require_source()
         self._check_data()
         if self.session is not None:
@@ -349,12 +358,14 @@ def _raw_selected_snapshot(pha):
 class _CombinedCountsModel(CompositeModel, ArithmeticModel):
     ndim = 1
 
-    def __init__(self, models, phas, projections, orders, grid, name):
+    def __init__(self, models, phas, projections, orders, grid, name, additive=None, divisors=None):
         self.models = tuple(models)
         self.phas = tuple(phas)
         self.projections = tuple(projections)
         self.orders = tuple(orders)
         self.grid = grid
+        self.additive = tuple(np.zeros(len(pha.channel)) for pha in phas) if additive is None else tuple(additive)
+        self.divisors = (1.,)*len(self.phas) if divisors is None else tuple(divisors)
         CompositeModel.__init__(self, name, self.models)
 
     def calc(self, p, xlo, xhi=None, *args, **kwargs):
@@ -362,13 +373,13 @@ class _CombinedCountsModel(CompositeModel, ArithmeticModel):
             raise ValueError("combined count models require integrated bins")
         total = np.zeros(self.grid.size)
         offset = 0
-        for model, pha, projection, order in zip(
-                self.models, self.phas, self.projections, self.orders):
+        for model, pha, projection, order, additive, divisor in zip(
+                self.models, self.phas, self.projections, self.orders, self.additive, self.divisors):
             size = len(model.pars)
             native = model.calc(p[offset:offset + size], pha.channel)
             # Group and select model counts EXACTLY as for the observed data.
             # apply_filter accepts either full or response-filtered channels.
-            selected = pha.apply_filter(native)
+            selected = pha.apply_filter((np.asarray(native) + additive)/divisor)
             total += projection(np.asarray(selected)[order])
             offset += size
         # Data1DInt passes only noticed bins here. These must be original
@@ -449,23 +460,131 @@ class CombinedDataset:
         self._session, self._id = session, id
 
 
-def combine_datasets(group, *, mode="joint", grid=None, name="combined"):
-    """Prepare a joint fit or an explicitly summed spectrum.
+def combine_datasets(group, *, mode="isis", grid=None, name="combined"):
+    """Prepare an ISIS-style combined fit, a joint fit, or a count snapshot.
 
-    The default joint mode returns the matched ``DatasetGroup`` so Sherpa
-    fits the original PHA datasets with their individual responses and
-    background likelihoods. Use ``mode="sum"`` for a synthetic summed
-    spectrum; that mode does not support background-bearing or subtracted
-    inputs. An output ``grid`` and ``name`` apply only to sum mode.
+    The default sums matched data and individually folded models BEFORE
+    computing the statistic. Call ``group.make_fit()`` after grouping and
+    filtering; each call reads the current selection. ``mode="joint"``
+    explicitly retains Sherpa's independent dataset likelihoods, including
+    WStat. Ordinary ``ui.fit`` is always a native Sherpa joint fit.
+    ``mode="sum"`` retains the covariance-aware background-free snapshot.
+    An output ``grid`` and ``name`` apply only to sum mode.
     """
-    if mode == "joint":
+    if mode in ("isis", "joint"):
         if grid is not None or name != "combined":
             raise ValueError("grid and name are only supported with mode='sum'")
         group._check_data()
+        group.combination_mode = mode
         return group
     if mode != "sum":
-        raise ValueError("mode must be 'joint' or 'sum'")
+        raise ValueError("mode must be 'isis', 'joint', or 'sum'")
     return _combine_datasets_sum(group, grid=grid, name=name)
+
+
+def _make_isis_fit(group, *, stat=None, method=None):
+    """Freeze the current matched/grouped view for one summed-statistic fit.
+
+    Native channel data and responses stay untouched. Fold each source through
+    its own unfiltered response, then apply exactly the plotting operator.
+    """
+    from scipy import sparse
+    from sherpa.stats import Likelihood, WStat
+    from .plotting import _matched_target, _read_pha, _alignment_projection, _areascal_divisor
+    from .resample import diagonal_covariance
+
+    group._check_data()
+    if group.session is None:
+        group._require_source()
+    if stat is None:
+        stat = CStat() if group.session is None else group.session.get_stat()
+    if method is None and group.session is not None:
+        method = group.session.get_method()
+    if isinstance(stat, WStat):
+        raise ValueError("ISIS combined-count fitting does not use Sherpa's per-spectrum WStat "
+                         "background likelihoods; use mode='joint' for WStat, or explicitly "
+                         "choose CStat for fixed measured backgrounds")
+    subtract = {bool(pha.subtracted) for pha in group.datasets.values()}
+    if len(subtract) != 1:
+        raise ValueError("ISIS combination requires consistent background-subtraction settings")
+    subtract = subtract.pop()
+    if subtract and isinstance(stat, Likelihood):
+        raise ValueError("Poisson statistics require unsubtracted counts")
+    options = dict(subtract_background=subtract, background_only=False,
+                   error_method="sqrt", exposure_source="pha")
+    reference = group.data_match.reference_data()
+    unit = group.data_match.unit
+    target = _matched_target(reference, unit, options)
+    grid = EnergyGrid(target.lo, target.hi)
+    phas, orders, projections, models, additive, divisors = [], [], [], [], [], []
+    counts = np.zeros(grid.size)
+    covariance = sparse.csr_matrix((grid.size, grid.size))
+    for key, original in group.datasets.items():
+        pha = deepcopy(original)
+        pha.ungroup()
+        pha.quality_filter = None
+        pha.mask = True
+        for bid in pha.background_ids:
+            background = pha.get_background(bid)
+            background.ungroup()
+            background.quality_filter = None
+            background.mask = True
+        native, order, _ = _selected_count_grid(pha, unit)
+        projection = _alignment_projection(native, target)
+        spectrum = _read_pha(pha, unit, options, raw=True, unfiltered=True, isis_areascal=True)
+        counts += projection(spectrum.counts)
+        covariance += projection.covariance(diagonal_covariance(spectrum.staterror**2))
+        offset = np.zeros(len(pha.channel))
+        if group.session is None:
+            if pha.background_ids:
+                raise ValueError("ISIS fits with backgrounds require a session; use mode='joint' "
+                                 "with an explicit statistic for session-free backgrounds")
+            source = group.sources[key]
+            model = Response1D(pha)(source)
+        else:
+            from sherpa.astro.background import get_response_for_pha
+            from sherpa.utils.err import ModelErr, IdentifierErr
+            if key in group.session.list_pileup_model_ids():
+                raise ValueError("ISIS matched-count combination does not support pileup models")
+            try:
+                source = group.session.get_source(key)
+            except (ModelErr, IdentifierErr) as exc:
+                raise ValueError("ISIS combined fitting requires source expressions; "
+                                 "use set_source rather than set_full_model, or mode='joint'") from exc
+            bkg_sources = {}
+            measured = np.zeros(len(pha.channel))
+            for bid in pha.background_ids:
+                measured += np.asarray(pha.get_background_scale(
+                    bid, units="counts", group=False, filter=False))*pha.get_background(bid).counts
+                try:
+                    bkg_sources[bid] = group.session.get_bkg_source(key, bkg_id=bid)
+                except ModelErr:
+                    try:
+                        group.session.get_bkg_model(key, bkg_id=bid)
+                    except ModelErr:
+                        pass
+                    else:
+                        raise ValueError("full background models require mode='joint'")
+            if bkg_sources and len(bkg_sources) != len(pha.background_ids):
+                raise ValueError("model either all or none of a dataset's backgrounds")
+            model = get_response_for_pha(pha, source, bkg_sources, None, key)
+            if bkg_sources:
+                offset = -measured if subtract else offset
+            elif not subtract:
+                offset = measured
+        phas.append(pha)
+        orders.append(order)
+        projections.append(projection)
+        models.append(model)
+        additive.append(offset)
+        divisors.append(_areascal_divisor(pha))
+    data = Data1DInt(group.name+"_isis_counts", grid.lo, grid.hi, counts,
+                     staterror=np.sqrt(covariance.diagonal()))
+    data.set_xlabel(axis_label(unit))
+    data.set_ylabel("Counts")
+    model = _CombinedCountsModel(models, phas, projections, orders, grid,
+                                 group.name+"_isis_model", additive, divisors)
+    return _make_fit(data, model, stat, method)
 
 
 def _combine_datasets_sum(group, *, grid=None, name="combined"):
@@ -484,8 +603,13 @@ def _combine_datasets_sum(group, *, grid=None, name="combined"):
     group._check_data()
     match = group.data_match
     unit = "energy" if match is None else match.unit
+    target = None
     if grid is None and match is not None:
-        grid = _selected_count_grid(match.reference_data(), unit)[0]
+        from .plotting import _matched_target
+        target = _matched_target(match.reference_data(), unit,
+                                 dict(subtract_background=False, background_only=False,
+                                      error_method="sqrt", exposure_source="pha"))
+        grid = EnergyGrid(target.lo, target.hi)
     # Regrid native channels BEFORE reference grouping. Independent grouping
     # of HEG/MEG first would lose resolution needed by the matched view.
     phas = tuple(_raw_selected_snapshot(pha) if match is not None else deepcopy(pha)
@@ -518,6 +642,14 @@ def _combine_datasets_sum(group, *, grid=None, name="combined"):
         fractional = False
     else:
         combination = resample_combination(count_grids, selected_counts, grid=grid, variances=variances)
+        if target is not None:
+            from .plotting import _alignment_projection
+            from .resample import ResampledCombination, diagonal_covariance
+            projections = tuple(_alignment_projection(native, target) for native in count_grids)
+            combination = ResampledCombination(
+                grid, projections, sum(p(c) for p, c in zip(projections, selected_counts)),
+                sum((p.covariance(diagonal_covariance(v)) for p, v in zip(projections, variances))),
+                any(p.fractional for p in projections))
         covariance, fractional = combination.covariance, combination.fractional
     grid = combination.grid
     members = tuple(group.datasets)

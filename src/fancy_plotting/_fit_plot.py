@@ -156,7 +156,7 @@ def _expand_prediction(pha, model):
     return full
 
 
-def evaluate_models(session, datasets, *, models=None, wstat=False):
+def evaluate_models(session, datasets, *, models=None, wstat=False, unfiltered_ids=()):
     """Evaluate available models once per dataset; no session/data writes.
 
     Values returned are raw source-aperture predicted counts. Standard PHA
@@ -201,7 +201,7 @@ def evaluate_models(session, datasets, *, models=None, wstat=False):
             else:
                 raise ValueError("use CStat for a modeled background, or remove the background model for WStat")
         additive = np.zeros(len(pha.channel))
-        if not pha.background_ids:
+        if not pha.background_ids and key not in unfiltered_ids:
             jobs[key] = (pha, session.get_model(key), additive)
             continue
         background = sum(np.asarray(pha.get_background_scale(bid, units="counts", group=False, filter=False)) *
@@ -209,6 +209,9 @@ def evaluate_models(session, datasets, *, models=None, wstat=False):
         try:
             source = session.get_source(key)
         except (ModelErr, IdentifierErr):
+            if key in unfiltered_ids:
+                raise ValueError("matched plotting requires a source expression to fold all native "
+                                 "channels; supply models= for an explicit full model")
             # Explicit set_full_model: respect the original PHA convention.
             if pha.subtracted or wstat:
                 additive = background
@@ -231,6 +234,10 @@ def evaluate_models(session, datasets, *, models=None, wstat=False):
             pileup = session.get_pileup_model(key)
         view = deepcopy(pha)
         view.unsubtract()
+        if key in unfiltered_ids:
+            view.ungroup()
+            view.quality_filter = None
+            view.mask = True
         convolved = get_response_for_pha(view, source, bkg_sources, pileup, key)
         if not bkg_sources:
             additive = background

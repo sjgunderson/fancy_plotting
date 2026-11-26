@@ -39,10 +39,13 @@ group.set_source(source)
 fit = group.make_fit().fit()
 ```
 
-By default, `combine_datasets` prepares a joint fit over the original PHA
-datasets, preserving their individual responses and Sherpa background
-handling. Use `combine_datasets(group, mode="sum")` for an explicitly summed
-spectrum; this mode does not support background-bearing or subtracted inputs.
+By default, `combine_datasets` sums matched data and individually folded models
+before evaluating the statistic. Call `group.make_fit()` after grouping and
+filtering. Matched counts and predictions receive ISIS's AREASCAL correction
+before regridding. Use `mode="joint"` for native Sherpa likelihoods, including
+WStat; ordinary `ui.fit(...)` always remains joint. The older `mode="sum"`
+provides a covariance-aware snapshot of raw counts. See
+[Grid Matching](GRID_MATCHING.md) for the modes and their statistical limits.
 
 See `docs/GRATING_MATCHING.md`, `docs/GROUPING.md`, `docs/PLOTTING.md`, and
 the other files in `docs/` for detailed APIs and examples.

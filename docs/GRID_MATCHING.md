@@ -68,14 +68,27 @@ view maps each selected native bin onto the reference grid. Therefore raw
 arrays obtained from ui.get_data still have their original channel counts;
 plot_data and combine_datasets use the aligned view.
 
-The reference's current grouping and filtering define the common output
-bins. Other members' native grouping is removed on working copies before
-regridding, preserving native resolution; their noticed/quality channel
-selections are retained. This implements the intended operation order:
-native bins $\rightarrow$ matched reference bins $\rightarrow$ reference
-grouping. Grouping all members with group_width is allowed, but the
-reference determines the common view even when HEG/MEG native channel widths
-differ.
+The reference's current grouping, quality mask, and notice/ignore selection
+define the common output bins. Matched plots and ISIS fits read the complete
+native channels from working copies, match them to the complete reference
+grid, then apply the exact reference group membership and selection. Native
+masks on other members are not applied before this mapping. This follows
+the operation order: native channels $\rightarrow$ matched reference channels
+$\rightarrow$ grouping $\rightarrow$ selection. Grouping all members with
+`ui.group_width` is allowed; the reference determines the common view.
+
+Grouping uses a channel-membership matrix rather than only a group's outer
+boundaries. A channel excluded inside a group, or a calibration gap inside
+its bounds, cannot leak counts back into that group. Data, folded models,
+and flux-correction weights use the same operation.
+
+ISIS divides source counts and stored errors by finite, nonzero `AREASCAL`
+values while loading a PHA. Sherpa instead keeps raw counts and applies
+AREASCAL to the response. For matched plots and ISIS fits, this package
+performs the equivalent division on working copies before matching; it also
+corrects backgrounds independently and divides folded predictions by the
+source-channel AREASCAL. The native PHA counts, errors, and response metadata
+are preserved. Do not manually apply this correction to loaded arrays.
 
 **Non-uniform grouping commands will not retain a matched grid.** Due to
 data-dependent computations of grouping commands like `group_snr` and
@@ -104,11 +117,12 @@ happens on native bins through Sherpa before plotting regrids them.
 
 ## Combined fits
 
-By default, `combine_datasets` follows the ISIS combination model: it returns
-the matched `DatasetGroup`, and Sherpa fits the original PHA datasets jointly.
-Each spectrum retains its own response, observed bins, and background
-likelihood. The shared source grid avoids repeated source evaluation without
-collapsing the member datasets into a single Poisson spectrum.
+By default, `combine_datasets` returns a matched `DatasetGroup` configured
+for ISIS-style summed-count fitting. It folds each source through its own
+response, corrects native AREASCAL, applies the same matching/grouping map as
+the plot, and sums the data and predictions BEFORE evaluating the statistic.
+A joint fit instead sums separate statistic contributions; these operations
+are not interchangeable.
 
 ```python
 from fancy_plotting import combine_datasets
@@ -118,13 +132,71 @@ group.set_source(source)
 result = group.make_fit().fit()
 ```
 
-For UI fit-result bookkeeping, use `ui.fit(*group.datasets)` after assigning
-the source in the session. Session-backed fits use Sherpa's configured
-statistic and include associated background-region likelihoods. Session-free
-fits with backgrounds or subtracted data require an explicit compatible
-statistic, such as `WStat()` for unsubtracted Poisson backgrounds or a
-chi-square statistic after subtraction. For raw background-free data, the
-default remains `CStat`.
+Call `group.make_fit()` after grouping and selecting the fitted range. It
+reads the current reference settings each time; an already returned `Fit`
+is a snapshot, so rebuild it after changing selections or grouping. Existing
+session source expressions can be used directly; `set_source` additionally
+enables shared source evaluation. The session statistic and optimizer are
+used unless explicitly overridden. Calling the returned `Fit.fit()` returns
+a Sherpa fit result without updating `ui.get_fit_results()`.
+
+For example, the RGS workflow is:
+
+```python
+ui.set_analysis("energy")
+combinedrgs = fp.combine_datasets(fp.match_dataset_grids(rgs))
+for dataset_id in rgs:
+    ui.group_width(dataset_id, 10)
+ui.set_analysis("wavelength")
+# Apply notice/ignore selections and define sources as usual.
+fp.plot_data([rgs])
+fit = combinedrgs.make_fit(stat=CStat())  # from sherpa.stats import CStat
+result = fit.fit()
+```
+
+With no background model, ISIS-mode CStat uses the measured, scaled background
+as a fixed additive prediction, consistent with the plotting convention.
+It does not profile a separate background likelihood. Subtracted inputs
+require a Gaussian statistic and consistent subtraction settings. Source
+expressions and background source expressions are supported; explicit full
+models and pileup require native joint fitting. Session-free ISIS fits with
+backgrounds are not supported.
+
+WStat requires the explicit native joint mode:
+
+```python
+joint = fp.combine_datasets(matched, mode="joint")
+joint.set_source(source)
+result = joint.make_fit().fit()  # inherits session WStat and background likelihoods
+```
+
+Ordinary `ui.fit(...)` always remains a native joint fit, regardless of the
+combination mode. Calling it does not fit a summed spectrum. Joint mode also
+preserves Sherpa's full background-model handling and UI result bookkeeping.
+
+The compatibility target is the matching, AREASCAL, grouping, and
+sum-before-statistic operation order. This is not a blanket guarantee of
+identical results for every ISIS statistic or background convention. In
+particular, displayed errors retain propagated covariance rather than
+ISIS's reinitialized diagonal errors after `rebin_dataset`; Gaussian ISIS
+fits currently use its marginal diagonal. Background scaling follows Sherpa
+on native channels. Fractionally redistributed or AREASCAL-corrected counts
+are not independent integer Poisson samples; applying CStat reproduces the
+summed-count convention, not an exact native-data likelihood. Use joint mode
+when that likelihood is required, or the explicit covariance sum below for
+a correlated Gaussian approximation to raw counts.
+
+The count-map regressions use upstream ISIS `apply_areascale`,
+`rebin_histogram`, and `apply_rebin` function bodies compiled with a C compiler
+(FITS reads supply synthetic area arrays). A comparison over 128 shifted,
+area-scaled, quality-filtered grids agrees within floating-point precision.
+This checks the numerical operations, not a complete ISIS installation or
+an observation-specific RGS fit. The reference source is pinned to ISIS
+commit `bc8e15a9aeecace0679fb9a90c6e8cabc551cfe6`:
+[PHA loading](https://github.com/houckj/isis/blob/bc8e15a9aeecace0679fb9a90c6e8cabc551cfe6/src/histogram.c),
+[rebinning](https://github.com/houckj/isis/blob/bc8e15a9aeecace0679fb9a90c6e8cabc551cfe6/src/util.c),
+[grid matching](https://github.com/houckj/isis/blob/bc8e15a9aeecace0679fb9a90c6e8cabc551cfe6/share/hist-cmds.sl), and
+[statistic combination](https://github.com/houckj/isis/blob/bc8e15a9aeecace0679fb9a90c6e8cabc551cfe6/src/fit-cmds.c).
 
 The method of combining datasets can also be used with arbitrary combinations.
 
@@ -150,15 +222,18 @@ pair34.set_source(source)
 ui.set_source(5, source)
 
 
-ui.fit()
+result12 = pair12.make_fit().fit()
+result34 = pair34.make_fit().fit()
+ui.fit(5)
 ```
-All loaded datasets will then be used for minimization, but the model will
-only be computed on the grids of match12, match34, and 5.
+These are separate fits. For one native joint minimization across all five
+datasets, use `mode="joint"` for the prepared groups and call `ui.fit()`.
+Shared evaluation still avoids repeated source work inside each group.
 
 
 ### Advanced Usage
 
-To create a single summed `Data1DInt` spectrum instead, opt in explicitly:
+To create a covariance-aware `Data1DInt` snapshot of raw counts, opt in explicitly:
 
 ```python
 summed = combine_datasets(matched, mode="sum")

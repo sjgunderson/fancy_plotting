@@ -69,12 +69,16 @@ For `[[1, 2], [3, 4]]`, modes 1-3 produce four residual curves; modes 4-6
 produce two. Their order is outer group first, then member order. Individual
 residuals retain the matched physical view when matching was prepared.
 
-Model predictions go through their own ARF/RMF/exposure/AREASCAL and the same
-noticed-channel selection, reference matching, and plot-only rebinning as
-the data. The upper model curve uses the same exposure combination, density,
+Model predictions go through their own ARF/RMF/exposure/AREASCAL. Matched
+views then divide out native AREASCAL, match full reference channels, and
+apply the reference's exact grouping, quality mask, and selection, just as
+for the data. Responses are evaluated on unfiltered working copies so native
+notice masks cannot remove channels before matching. The upper model curve
+uses the same exposure combination, density,
 plot factor, scale, and offset as its data curve. Gaps remain gaps.
 
-Residuals are calculated after whole-bin plot rebinning, from raw count sums,
+Residuals are calculated after whole-bin plot rebinning, from integrated
+count sums (AREASCAL corrected for matched views),
 without exposure weights, display scale/offset, density, or plot-factor weights.
 This follows Michael Nowak's `fancy_plots` resplot, which calls make_data with
 unit scalings. Consequently, a combined count diagnostic can be zero even when
@@ -176,6 +180,12 @@ rebinning or matching, their unsigned magnitudes reproduce Sherpa's per-bin
 WStat contributions. Matching that splits channels creates correlated
 fractional counts, so the result remains a display diagnostic.
 
+In a matched AREASCAL-corrected view, source and off counts are each divided
+by their own native area factors and alpha omits the removed AREASCAL ratio.
+Such corrected, potentially fractional counts remain display diagnostics;
+they are not Sherpa's native WStat likelihood. Use `mode="joint"` for that
+fit likelihood.
+
 WStat diagnostics require unsubtracted DataPHA inputs with exactly one
 associated background per dataset, positive scale/exposure values, and no
 fitted background model. Use CStat when fitting a background model.
@@ -208,6 +218,9 @@ Counts are handled in raw source-aperture space before display conversion:
 - A source `set_full_model` expression follows its PHA's subtraction convention:
   an unsubtracted PHA's expression predicts raw totals; a subtracted PHA's
   expression predicts net counts and measured B is added for raw diagnostics.
+- Matched views require a source expression to reconstruct an unfiltered
+  response. For explicit full models, supply native total predictions through
+  `models=` or disable alignment with `align=False`.
 - Separate background full models without a background source expression are
   not automatically interpreted. Use a source full model containing the raw
   total prediction, or supply explicit total model arrays with models=.
